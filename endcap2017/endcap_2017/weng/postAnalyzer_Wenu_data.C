@@ -1,0 +1,331 @@
+#define postAnalyzer_cxx
+#include "postAnalyzer.h"
+#include <TH2.h>
+#include <TStyle.h>
+#include <TCanvas.h>
+#include "TH1F.h"
+#include <iostream>
+#include <bitset>
+#include <climits>
+#include <cstring>
+#include "Math/Minimizer.h"
+#include "Math/Factory.h"
+#include "Math/Functor.h"
+#include "TStopwatch.h"
+#include <algorithm>
+#include <vector>
+#include <iterator>
+#include <list>
+#include <set>
+#include "cuts.h"
+#include "EA.h"
+using namespace std;
+using std::vector;
+
+int main(int argc, const char* argv[])
+{
+  Long64_t maxEvents = atof(argv[3]);
+  if (maxEvents < -1LL)
+    {
+      std::cout<<"Please enter a valid value for maxEvents (parameter 3)."<<std::endl;
+      return 1;
+    }
+  int reportEvery = atof(argv[4]);
+  if (reportEvery < 1)
+    {
+      std::cout<<"Please enter a valid value for reportEvery (parameter 4)."<<std::endl;
+      return 1;
+    }
+  postAnalyzer t(argv[1],argv[2]);
+  t.Loop(maxEvents,reportEvery);
+  return 0;
+}
+
+
+
+void postAnalyzer::Loop(Long64_t maxEvents, int reportEvery)
+{
+  if (fChain == 0) return;
+  int nTotal;
+  nTotal = 0;
+  double nPassing;
+  nPassing = 0.0;
+  double nObs_bin1, nObs_bin2, nObs_bin3, nObs_bin4, nObs_bin5;
+  nObs_bin1 = nObs_bin2 = nObs_bin3 = nObs_bin4 = nObs_bin5 = 0.0;
+  int nFilters, nHLT, nPhoCand, nWorstChIso, nGoodEle, nRecoil170, nDphiPhoRecoil, nDphiJetsMET, nMuVeto, nMETcut, nEleMETmT;
+  nFilters = nHLT = nPhoCand = nWorstChIso = nGoodEle = nRecoil170 = nDphiPhoRecoil = nDphiJetsMET = nMuVeto = nMETcut = nEleMETmT = 0;
+  
+  std::vector<int> phoCand1;
+  phoCand1.clear();
+  
+  std::vector<int> jetveto;
+  jetveto.clear();
+  
+  std::vector<Int_t> runlist;
+  runlist.clear();
+  std::vector<Long64_t> eventlist;
+  eventlist.clear();
+  std::vector<Int_t> lumilist;
+  lumilist.clear();
+  
+  
+  bool debug=true;
+  Long64_t nentries = fChain->GetEntries();
+  std::cout<<"Coming in: "<<std::endl;
+  std::cout<<"nentries:"<<nentries<<std::endl;
+  //Look at up to maxEvents events, or all if maxEvents == -1.
+  Long64_t nentriesToCheck = nentries;
+  if (maxEvents != -1LL && nentries > maxEvents)
+    nentriesToCheck = maxEvents;
+  nTotal = nentriesToCheck;
+  Long64_t nbytes = 0, nb = 0;
+  
+  std::cout<<"Running over "<<nTotal<<" events."<<std::endl;
+  TStopwatch sw;
+  sw.Start();
+  for (Long64_t jentry=0; jentry<nentriesToCheck;jentry++)
+    {
+      
+      event_.clear();
+      event_info.clear();
+      
+      Long64_t ientry = LoadTree(jentry);
+      if (ientry < 0) break;
+      nb = fChain->GetEntry(jentry);   nbytes += nb;
+      
+      //=1.0 for real data
+      double event_weight=1.0;
+      double EWK_corrected_weight=1.0;
+      double NNLO_weight=1.0;
+      
+      TLorentzVector ele_4vec, antiele_4vec;
+      TLorentzVector dilepton_4vec, dilepton_4vec_temp;
+      
+      //Reconstructed event cuts
+      phoCand1   = getPhoCand(225,1.4442,1);
+      
+      if (!getMetFilter()) continue;
+      {
+	nFilters++;
+	if(HLTPho>>11&1 == 1)
+	  {
+	    nHLT++;
+	    if(phoCand1.size() >0)
+	      {
+		nPhoCand++;
+		// event_weight*=(1.013 - 0.0001168*phoEt->at(phoCand1[0]));
+		//   if( TMath::Max( ( (*phoYuPFChWorstIso)[phoCand1[0]]  - rho*EAchargedworst((*phoSCEta)[phoCand1[0]]) ), 0.0) < 1.37 )
+		{
+		  nWorstChIso++;
+		  Float_t uncorrectedPhoEt = ((*phoEt)[phoCand1[0]]);
+		  // Double_t EWK_percent_adjustment = ewkCorrection->GetBinContent(ewkCorrection->GetXaxis()->FindBin(uncorrectedPhoEt));
+		  // EWK_corrected_weight = event_weight*(1.0+.01*EWK_percent_adjustment);
+		  // NNLO_weight = event_weight*EWK_corrected_weight*NNLOCorrection(phoEt->at(phoCand1[0]));
+		  
+		  std::vector<int> elelist = electron_veto_tightID(phoCand1[0],30.0);
+		  std::vector<int> looseEles = electron_veto_looseID(phoCand1[0],0,10.0);
+		  std::vector<int> looseMus;
+		  looseMus.clear();
+		  if(elelist.size() == 1 && looseEles.size() == 1)
+		    {
+		      nGoodEle++;
+		      looseMus = muon_veto_looseID(phoCand1[0],elelist[0],10.0);
+		      jetveto = JetVetoDecision(phoCand1[0],elelist[0]);
+		      
+		      TLorentzVector lep_4vec;
+		      lep_4vec.SetPtEtaPhiE(elePt->at(elelist[0]),eleEta->at(elelist[0]),elePhi->at(elelist[0]),eleE->at(elelist[0]));
+		      // lep_4vec.SetPtEtaPhiE(muPt->at(mulist[0]),muEta->at(mulist[0]),muPhi->at(mulist[0]),muEn->at(mulist[0]));
+		      
+		      Double_t lepton_pt = lep_4vec.Pt();
+		      TLorentzVector met_4vec;
+		      met_4vec.SetPtEtaPhiE(pfMET,0.,pfMETPhi,pfMET);
+		      TLorentzVector leptoMET_4vec = lep_4vec+met_4vec;
+		      Double_t leptoMET = leptoMET_4vec.Pt();
+		      Double_t leptoMET_phi = leptoMET_4vec.Phi();
+		      
+		      if(leptoMET > 200)
+			{
+			  nRecoil170++;
+			  fillHistos(0,event_weight,phoCand1[0],jetveto,elelist,leptoMET,leptoMET_phi);
+			  if(DeltaPhi(phoPhi->at(phoCand1[0]),leptoMET_phi) > 0.5)
+			    {
+			      nDphiPhoRecoil++;
+			      fillHistos(1,event_weight,phoCand1[0],jetveto,elelist,leptoMET,leptoMET_phi);
+			      if(dPhiJetMET_veto(jetveto))
+				{
+				  nDphiJetsMET++;
+				  fillHistos(2,event_weight,phoCand1[0],jetveto,elelist,leptoMET,leptoMET_phi);
+				  if(looseMus.size() == 0)
+				    {
+				      nMuVeto++;
+				      fillHistos(3,event_weight,phoCand1[0],jetveto,elelist,leptoMET,leptoMET_phi);
+				      if(pfMET > 50)
+					{
+					  nMETcut++;
+					  fillHistos(4,event_weight,phoCand1[0],jetveto,elelist,leptoMET,leptoMET_phi);
+					  double dPhi_lepMET = DeltaPhi(elePhi->at(elelist[0]),pfMETPhi);
+					  double lepMET_MT = sqrt(2*elePt->at(elelist[0])*pfMET*(1-TMath::Cos(dPhi_lepMET)));
+					  if(lepMET_MT < 160 && uncorrectedPhoEt/leptoMET < 1.4)
+					    {
+					      nEleMETmT++;
+					      fillHistos(5,event_weight,phoCand1[0],jetveto,elelist,leptoMET,leptoMET_phi);
+					      runlist.push_back(run);
+					      eventlist.push_back(event);
+					      lumilist.push_back(lumis);
+					    }
+					}
+				    }
+				}
+			    }
+			}
+		    }
+		}
+	      }
+	  }
+      }
+      tree->Fill();
+      
+      if (jentry%reportEvery == 0)
+	{
+	  std::cout<<"Finished entry "<<jentry<<"/"<<(nentriesToCheck-1)<<std::endl;
+	}
+    }
+  
+  if((nentriesToCheck-1)%reportEvery != 0)
+    std::cout<<"Finished entry "<<(nentriesToCheck-1)<<"/"<<(nentriesToCheck-1)<<std::endl;
+  sw.Stop();
+  std::cout<<"All events checked."<<std::endl;
+  //Report
+  std::cout << "RealTime : " << sw.RealTime() / 60.0 << " minutes" << std::endl;
+  std::cout << "CPUTime  : " << sw.CpuTime()  / 60.0 << " minutes" << std::endl;
+  std::cout << std::endl;
+  std::cout << "Number of events inspected: " << nTotal << std::endl;
+  std::cout<<std::endl;
+  cout<<"Events passing all cuts:"<<endl;
+  cout<<"run:event:lumis"<<endl;
+  for(int i = 0; i < runlist.size(); i++)
+    {
+      cout<<runlist[i]<<":"<<eventlist[i]<<":"<<lumilist[i]<<endl;
+    }
+  cout<<endl;
+  cout<<endl;
+  cout<<"nFilters: "<<nFilters<<endl;
+  cout<<"nHLT: "<<nHLT<<endl;
+  cout<<"nPhoCand: "<<nPhoCand<<endl;
+  cout<<"nWorstChIso: "<<nWorstChIso<<endl;
+  cout<<"nGoodEle: "<<nGoodEle<<endl;
+  cout<<"nRecoil170: "<<nRecoil170<<endl;
+  cout<<"nDphiPhoRecoil: "<<nDphiPhoRecoil<<endl;
+  cout<<"nDphiJetsMET: "<<nDphiJetsMET<<endl;
+  cout<<"nMuVeto: "<<nMuVeto<<endl;
+  cout<<"nMETcut: "<<nMETcut<<endl;
+  cout<<"nEleMETmT: "<<nEleMETmT<<endl;
+  cout<<endl;
+}
+
+void postAnalyzer::BookHistos(const char* file2)
+{
+  fileName = new TFile(file2, "RECREATE");
+  tree = new TTree("ADD","ADD");
+  tree->Branch("event_","std::vector<unsigned int>",&event_);
+  tree->Branch("event_info","std::vector<double>",&event_info);
+  fileName->cd();
+
+  Float_t PtBins[6]={225.,250., 300., 400., 600., 1000.0};
+  Float_t MetBins[6]={200.,250., 300., 400., 600., 1000.0};
+  Float_t dPhiJetMETBins[14]={0.0,0.25,0.50,0.75,1.00,1.25,1.50,1.75,2.00,2.25,2.50,2.75,3.00,3.142};
+  for(int i=0; i<10; i++)
+    {
+      char ptbins[100];
+      sprintf(ptbins, "_%d", i);
+      std::string histname(ptbins);
+      //mark 
+      
+      h_myptmet[i] = new TH2F(("Photon_Et_MET"+histname).c_str(),"Photon_Et_MET",20,200,1000,15,0,700);h_myptmet[i]->Sumw2();
+      h_myptnjet[i] = new TH2F(("Photon_Et_nJet"+histname).c_str(),"Photon_Et_nJet",20,200,1000,15,0,15);h_myptnjet[i]->Sumw2();
+      h_nVtx[i] = new TH1F(("nVtx"+histname).c_str(), "nVtx",40,0,40);h_nVtx[i]->Sumw2();
+      h_photon_Et_range[i] = new TH1F(("Photon_Et_range"+histname).c_str(), "Photon_Et",5,PtBins);h_photon_Et_range[i]->Sumw2();
+      h_photon_SCEta[i] = new TH1F(("h_photon_SCEta"+histname).c_str(), "h_photon_SCEta",15,-5.0,5.0);h_photon_SCEta[i]->Sumw2();
+      h_photon_SCPhi[i] = new TH1F(("h_photon_SCPhi"+histname).c_str(), "h_photon_SCPhi", 15,0,3.1416);h_photon_SCPhi[i]->Sumw2();
+      h_pfMET[i] = new TH1F(("pfMET"+histname).c_str(), "pfMET",15,0.,700.);h_pfMET[i]->Sumw2();
+      h_nJet[i] = new TH1F(("nJet"+histname).c_str(), "nJet",15,0,15);h_nJet[i]->Sumw2();
+      h_leadingJetPt[i] = new TH1F(("leadingJetPt"+histname).c_str(),"leadingJetPt",15,0,300);h_leadingJetPt[i]->Sumw2();
+      h_leadingJetEta[i] = new TH1F(("h_leadingJetEta"+histname).c_str(),"h_leadingJetEta",15,-5.0,5.0);h_leadingJetEta[i]->Sumw2();
+      h_PTMET[i] = new TH1F(("PTMET"+histname).c_str(),"P_{T}/Missing E_{T}",15,0,2);h_PTMET[i]->Sumw2();
+      h_leptonPt[i] = new TH1F(("h_leptonPt"+histname).c_str(),"h_leptonPt",15,30.,400.);h_leptonPt[i]->Sumw2();
+      h_leptonEta[i] = new TH1F(("h_leptonEta"+histname).c_str(),"h_leptonEta",15,-5.0,5.0);h_leptonEta[i]->Sumw2();
+      h_leptonPhi[i] = new TH1F(("h_leptonPhi"+histname).c_str(),"h_leptonPhi",15,0.,3.1416);h_leptonPhi[i]->Sumw2();
+      h_photonic_recoil[i] = new TH1F(("h_photonic_recoil"+histname).c_str(),"h_photonic_recoil",5,MetBins);h_photonic_recoil[i]->Sumw2();
+      h_dPhi_phoRecoil[i] = new TH1F(("h_dPhi_phoRecoil"+histname).c_str(),"h_dPhi_phoRecoil",15,2.0,3.1416);h_dPhi_phoRecoil[i]->Sumw2();
+      h_phoPT_over_photonicRecoil[i] = new TH1F(("h_phoPT_over_photonicRecoil"+histname).c_str(),"h_phoPT_over_photonicRecoil",15,0.,2.);h_phoPT_over_photonicRecoil[i]->Sumw2();
+      h_leptonPt_over_pfMET[i] = new TH1F(("h_leptonPt_over_pfMET"+histname).c_str(),"h_leptonPt_over_pfMET",20,0.,3.);h_leptonPt_over_pfMET[i]->Sumw2();
+      h_lepMET_MT[i] = new TH1F(("h_lepMET_MT"+histname).c_str(),"h_lepMET_MT",15,0.,400.);h_lepMET_MT[i]->Sumw2();
+      h_min_dphijetmet[i] = new TH1F(("h_min_dphijetmet"+histname).c_str(),"h_min_dphijetmet",13,dPhiJetMETBins);h_min_dphijetmet[i]->Sumw2();
+      h_min_dphijetrecoil[i] = new TH1F(("h_min_dphijetrecoil"+histname).c_str(),"h_min_dphijetrecoil",10,0.,3.15);h_min_dphijetrecoil[i]->Sumw2();
+      h_dPhi_lepMET[i] = new TH1F(("h_dPhi_lepMET"+histname).c_str(),"h_dPhi_lepMET",15,0.,3.15);h_dPhi_lepMET[i]->Sumw2();
+      h_dPhi_phoRecoil_fullrange[i] = new TH1F(("h_dPhi_phoRecoil_fullrange"+histname).c_str(),"h_dPhi_phoRecoil_fullrange",20,0.,3.15);h_dPhi_phoRecoil_fullrange[i]->Sumw2();
+      h_pfMETsumEt[i] = new TH1F(("pfMETsumEt"+histname).c_str(),"pfMETsumEt",5,MetBins);
+      h_METoverSqrtSumEt_extended[i] = new TH1F(("METoverSqrtSumEt_extended"+histname).c_str(),"METoverSqrtSumEt",30,0,30);
+      h_METoverSqrtSumEt[i] = new TH1F(("METoverSqrtSumEt"+histname).c_str(),"METoverSqrtSumEt",30,0,10);
+    }
+}
+void postAnalyzer::fillHistos(int histoNumber, double event_weight,int index,std::vector<int> jets,std::vector<int> leplist,Double_t leptoMET,Double_t leptoMET_phi)
+{
+  Float_t uncorrectedPhoEt = ((*phoEt)[index]);
+  h_photon_Et_range[histoNumber]->Fill(uncorrectedPhoEt,event_weight);
+  h_photon_SCEta[histoNumber]->Fill(phoSCEta->at(index),event_weight);
+  h_photon_SCPhi[histoNumber]->Fill(phoSCPhi->at(index),event_weight);
+  h_pfMET[histoNumber]->Fill(pfMET,event_weight);
+  h_myptmet[histoNumber]->Fill(uncorrectedPhoEt,pfMET);
+  h_myptnjet[histoNumber]->Fill(uncorrectedPhoEt,jets.size());
+  
+  h_PTMET[histoNumber]->Fill(uncorrectedPhoEt/pfMET,event_weight);
+  h_nJet[histoNumber]->Fill(jets.size(),event_weight);
+  if(jets.size()>0){
+    h_leadingJetPt[histoNumber]->Fill(jetPt->at(jets[0]),event_weight);
+    h_leadingJetEta[histoNumber]->Fill(jetEta->at(jets[0]),event_weight);
+    int max_njets = jets.size();
+    if(jets.size() > 4)
+      max_njets = 4;
+    double min_dphijetmet = TMath::Pi();
+    double min_dphijetrecoil = TMath::Pi();
+    for(int i = 0; i < max_njets; i++)
+      {
+        double dphijetmet = DeltaPhi(jetPhi->at(jets[i]),pfMETPhi);
+        if(dphijetmet < min_dphijetmet)
+          min_dphijetmet = dphijetmet;
+        double dphijetrecoil = DeltaPhi(jetPhi->at(jets[i]),leptoMET_phi);
+        if(dphijetrecoil < min_dphijetrecoil)
+          min_dphijetrecoil = dphijetrecoil;
+      }
+    h_min_dphijetmet[histoNumber]->Fill(min_dphijetmet,event_weight);
+    h_min_dphijetrecoil[histoNumber]->Fill(min_dphijetrecoil,event_weight);
+  }
+  h_leptonPt[histoNumber]->Fill(elePt->at(leplist[0]),event_weight);
+  h_leptonEta[histoNumber]->Fill(eleEta->at(leplist[0]),event_weight);
+  h_leptonPhi[histoNumber]->Fill(elePhi->at(leplist[0]),event_weight);
+  h_photonic_recoil[histoNumber]->Fill(leptoMET,event_weight);
+  double dPhi_phoRecoil = DeltaPhi(phoPhi->at(index),leptoMET_phi);
+  h_dPhi_phoRecoil[histoNumber]->Fill(dPhi_phoRecoil,event_weight);
+  h_dPhi_phoRecoil_fullrange[histoNumber]->Fill(dPhi_phoRecoil,event_weight);
+  h_phoPT_over_photonicRecoil[histoNumber]->Fill(uncorrectedPhoEt/leptoMET,event_weight);
+  h_leptonPt_over_pfMET[histoNumber]->Fill(elePt->at(leplist[0])/pfMET,event_weight);
+  double dPhi_lepMET = DeltaPhi(elePhi->at(leplist[0]),pfMETPhi);
+  h_dPhi_lepMET[histoNumber]->Fill(dPhi_lepMET,event_weight);
+  h_lepMET_MT[histoNumber]->Fill(sqrt(2*elePt->at(leplist[0])*pfMET*(1-TMath::Cos(dPhi_lepMET))),event_weight);
+  h_pfMETsumEt[histoNumber]->Fill(pfMETsumEt,event_weight);
+  h_METoverSqrtSumEt_extended[histoNumber]->Fill(pfMET/sqrt(pfMETsumEt),event_weight);
+  h_METoverSqrtSumEt[histoNumber]->Fill(pfMET/sqrt(pfMETsumEt),event_weight);
+}
+void postAnalyzer::scaleHistos(int histoNumber, double scale_factor)
+{
+  
+}
+double postAnalyzer::DeltaPhi(double phi1, double phi2)
+{
+  double pi = TMath::Pi();
+  double dphi = fabs(phi1-phi2);
+  if(dphi>pi)
+    dphi = 2.0*pi - dphi;
+  return dphi;
+}
